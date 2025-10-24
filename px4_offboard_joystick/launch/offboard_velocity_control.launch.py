@@ -51,39 +51,51 @@ def generate_launch_description():
     
     return LaunchDescription([
         # ExecuteProcess(cmd=['bash', bash_script_path], output='screen'),
-        Node(
-            package='px4_offboard_joystick',
-            namespace='px4_offboard_joystick',
-            executable='visualizer',
-            name='visualizer'
-        ),
+        # Node(
+        #     package='joy',
+        #     executable='joy_node',
+        #     name='joy_node',
+        #     output='screen',
+        # ),
         # Node(
         #     package='px4_offboard_joystick',
-        #     namespace='px4_offboard',
-        #     executable='processes',
-        #     name='processes',
-        #     prefix='gnome-terminal --'
+        #     namespace='px4_offboard_joystick',
+        #     executable='visualizer',
+        #     name='visualizer'
         # ),
         Node(
             package='px4_offboard_joystick',
-            namespace='px4_offboard_joystick',
-            executable='joystick_control',
-            name='joy_control_node',
-            output='screen',
-            emulate_tty=True,
-            parameters=[joystick_params],
+            namespace='px4_offboard',
+            executable='processes',
+            name='processes',
+            prefix='gnome-terminal --'
         ),
-        Node(
-            package='px4_offboard_joystick',
-            namespace='px4_offboard_joystick',
-            executable='velocity_control',
-            name='velocity'
-        ),
-        Node(
-            package='rviz2',
-            namespace='',
-            executable='rviz2',
-            name='rviz2',
-            arguments=['-d', [os.path.join(package_dir, 'visualize.rviz')]]
-        )
+        # Node(
+        #     package='px4_offboard_joystick',
+        #     namespace='px4_offboard_joystick',
+        #     executable='joystick_control',
+        #     name='joy_control_node',
+        #     output='screen',
+        #     emulate_tty=True,
+        #     parameters=[joystick_params],
+        # ),
+        # Node(
+        #     package='px4_offboard_joystick',
+        #     namespace='px4_offboard_joystick',
+        #     executable='velocity_control',
+        #     name='velocity'
+        # ),
+        # Node(
+        #     package='px4_offboard_joystick',
+        #     namespace='px4_offboard_joystick',
+        #     executable='setpoint_camera',
+        #     name='setpoint_camera'
+        # ),
+        # Node(
+        #     package='rviz2',
+        #     namespace='',
+        #     executable='rviz2',
+        #     name='rviz2',
+        #     arguments=['-d', [os.path.join(package_dir, 'visualize.rviz')]]
+        # )
     ])

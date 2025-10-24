@@ -11,10 +11,10 @@ commands = [
     "MicroXRCEAgent udp4 -p 8888",
 
     # Run the PX4 SITL simulation
-    "cd ~/PX4-Autopilot && make px4_sitl gz_x500"
+    "cd /home/rodrigo/SOFT-PX4-SIMULATION/PX4/my-px4-autopilot && PX4_GZ_WORLD=grasping_world PX4_GZ_MODEL_POSE='0,0,1' make px4_sitl gz_x500_spiral_cobra",
 
     # Run QGroundControl
-    # "cd ~/QGroundControl && ./QGroundControl.AppImage"
+    "cd ~/Downloads && ./QGroundControl.AppImage"
 ]
 
 # Loop through each command in the list

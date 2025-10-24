@@ -32,7 +32,8 @@ setup(
                 'velocity_control = px4_offboard_joystick.velocity_control:main',
                 'control = px4_offboard_joystick.control:main',
                 'joystick_control = px4_offboard_joystick.joy_control:main',
-                'processes = px4_offboard_joystick.processes:main'
+                'processes = px4_offboard_joystick.processes:main',
+                'setpoint_camera = px4_offboard_joystick.setpoint_camera:main',
         ],
     },
 )
