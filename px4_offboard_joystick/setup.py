@@ -34,6 +34,7 @@ setup(
                 'joystick_control = px4_offboard_joystick.joy_control:main',
                 'processes = px4_offboard_joystick.processes:main',
                 'setpoint_camera = px4_offboard_joystick.setpoint_camera:main',
+                'setpoint_pixel = px4_offboard_joystick.setpoint_camera_from_pixel:main'
         ],
     },
 )
