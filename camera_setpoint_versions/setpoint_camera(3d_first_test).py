@@ -50,7 +50,6 @@ class SetpointCamera(Node):
         self.declare_parameter('feature_topic', '/pose_feature')
         self.declare_parameter('offset_z_distance', 0.5)
         self.declare_parameter('threshold_distance', 0.1)
-        self.declare_parameter('threshold_distance_z', 0.5)
 
         self.declare_parameter('px4_cmd_topic', '/fmu/in/vehicle_command')
         self.declare_parameter('px4_pos_topic', '/fmu/out/vehicle_local_position_v1')
@@ -81,7 +80,6 @@ class SetpointCamera(Node):
         self.feature_topic = self.get_parameter('feature_topic').get_parameter_value().string_value
         self.offset_z_distance = self.get_parameter('offset_z_distance').get_parameter_value().double_value
         self.threshold_distance = self.get_parameter('threshold_distance').get_parameter_value().double_value
-        self.threshold_distance_z = self.get_parameter('threshold_distance_z').get_parameter_value().double_value
         
         self.px4_cmd_topic = self.get_parameter('px4_cmd_topic').get_parameter_value().string_value
         self.px4_pos_topic = self.get_parameter('px4_pos_topic').get_parameter_value().string_value
@@ -504,7 +502,7 @@ class SetpointCamera(Node):
         # ==========================================================
         if self.control_phase == 'XY':
             
-            if current_error_distance_xy < self.threshold_distance:
+            if current_error_distance_xy < self.threshold_distance_xy:
                 # --- SUCESSO EM XY ---
                 self.get_logger().info(f"FASE 1 (XY) CONCLUÍDA. Erro 2D: {current_error_distance_xy:.3f}m")
                 
@@ -516,7 +514,6 @@ class SetpointCamera(Node):
                 # Reseta o PID de Z para uma partida limpa
                 self.integral_error_z = 0.0
                 self.last_error_z = 0.0
-                self.success_counter += 1
                 
                 if self.success_counter >= 10:
                     # CONDIÇÃO DE SUCESSO FINAL ATINGIDA
@@ -541,12 +538,12 @@ class SetpointCamera(Node):
 
                 # --- Controlador PID (X e Y) ---
                 # (Correção: Usando ganhos por eixo _x e _y que corrigi anteriormente)
-                self.integral_error_x = np.clip(self.integral_error_x + error_x * dt, -self.integral_limit, self.integral_limit)
+                self.integral_error_x = np.clip(self.integral_error_x + error_x * dt, -self.integral_limit_x, self.integral_limit_x)
                 derivative_error_x = (error_x - self.last_error_x) / dt
                 self.last_error_x = error_x
                 output_vel_x = (self.kp * error_x + self.ki * self.integral_error_x + self.kd * derivative_error_x)
 
-                self.integral_error_y = np.clip(self.integral_error_y + error_y * dt, -self.integral_limit, self.integral_limit)
+                self.integral_error_y = np.clip(self.integral_error_y + error_y * dt, -self.integral_limit_y, self.integral_limit_y)
                 derivative_error_y = (error_y - self.last_error_y) / dt
                 self.last_error_y = error_y
                 output_vel_y = (self.kp * error_y + self.ki * self.integral_error_y + self.kd * derivative_error_y)
@@ -555,9 +552,9 @@ class SetpointCamera(Node):
                 output_vel = np.array([output_vel_x, output_vel_y, 0.0]) # Z é zero
                 
                 output_norm = np.linalg.norm(output_vel)
-                if output_norm > self.max_vel: # Saturação XY
-                    output_vel = output_vel * (self.max_vel / output_norm)
-
+                if output_norm > self.max_vel_xy: # Saturação XY
+                    output_vel = output_vel * (self.max_vel_xy / output_norm)
+                
                 self.publish_velocity_setpoint(output_vel)
                 self.get_logger().info(
                     f"Fase XY - Erro 2D: {current_error_distance_xy:.2f}m | Vel: [{output_vel[0]:.2f}, {output_vel[1]:.2f}, 0.00]",
@@ -600,8 +597,6 @@ class SetpointCamera(Node):
 
                 # --- Saída de Velocidade (Z) ---
                 output_vel = np.array([0.0, 0.0, output_vel_z]) # X e Y são zero
-                # Inverte o sinal para NED
-                output_vel[2] = -output_vel[2]
                 
                 # Saturação Z
                 if abs(output_vel[2]) > self.max_vel_z:

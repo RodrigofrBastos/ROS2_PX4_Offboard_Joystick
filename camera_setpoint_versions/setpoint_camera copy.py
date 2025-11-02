@@ -50,7 +50,6 @@ class SetpointCamera(Node):
         self.declare_parameter('feature_topic', '/pose_feature')
         self.declare_parameter('offset_z_distance', 0.5)
         self.declare_parameter('threshold_distance', 0.1)
-        self.declare_parameter('threshold_distance_z', 0.5)
 
         self.declare_parameter('px4_cmd_topic', '/fmu/in/vehicle_command')
         self.declare_parameter('px4_pos_topic', '/fmu/out/vehicle_local_position_v1')
@@ -60,16 +59,9 @@ class SetpointCamera(Node):
         self.declare_parameter('kp', 0.3)
         self.declare_parameter('ki', 0.1)
         self.declare_parameter('kd', 0.2)
-        
-        self.declare_parameter('kp_z', 1.0) # Novo
-        self.declare_parameter('ki_z', 0.1) # Novo
-        self.declare_parameter('kd_z', 0.15) # Novo
-        
         self.declare_parameter('max_vel', 0.3)
-        self.declare_parameter('max_vel_z', 0.8)  # Vel máxima em Z
         self.declare_parameter('integral_limit', 1.0)
-        self.declare_parameter('integral_limit_z', 0.8)
-        
+
         self.declare_parameter('offboard_stream_delay_s', 2.0)
         self.declare_parameter('pos_staleness_threshold_s', 0.5)
         
@@ -81,7 +73,6 @@ class SetpointCamera(Node):
         self.feature_topic = self.get_parameter('feature_topic').get_parameter_value().string_value
         self.offset_z_distance = self.get_parameter('offset_z_distance').get_parameter_value().double_value
         self.threshold_distance = self.get_parameter('threshold_distance').get_parameter_value().double_value
-        self.threshold_distance_z = self.get_parameter('threshold_distance_z').get_parameter_value().double_value
         
         self.px4_cmd_topic = self.get_parameter('px4_cmd_topic').get_parameter_value().string_value
         self.px4_pos_topic = self.get_parameter('px4_pos_topic').get_parameter_value().string_value
@@ -91,14 +82,8 @@ class SetpointCamera(Node):
         self.kp = self.get_parameter('kp').get_parameter_value().double_value
         self.ki = self.get_parameter('ki').get_parameter_value().double_value
         self.kd = self.get_parameter('kd').get_parameter_value().double_value
-        self.kp_z = self.get_parameter('kp_z').get_parameter_value().double_value # Novo
-        self.ki_z = self.get_parameter('ki_z').get_parameter_value().double_value # Novo
-        self.kd_z = self.get_parameter('kd_z').get_parameter_value().double_value # Novo
-        
         self.max_vel = self.get_parameter('max_vel').get_parameter_value().double_value
-        self.max_vel_z = self.get_parameter('max_vel_z').get_parameter_value().double_value # Novo
         self.integral_limit = self.get_parameter('integral_limit').get_parameter_value().double_value
-        self.integral_limit_z = self.get_parameter('integral_limit_z').get_parameter_value().double_value # Novo
 
         self.offboard_stream_delay_s = self.get_parameter('offboard_stream_delay_s').get_parameter_value().double_value
         self.pos_staleness_threshold_s = self.get_parameter('pos_staleness_threshold_s').get_parameter_value().double_value
@@ -157,9 +142,6 @@ class SetpointCamera(Node):
         self.last_error_x = 0.0
         self.integral_error_y = 0.0 # Novo
         self.last_error_y = 0.0 # Novo
-        self.integral_error_z = 0.0 # Novo
-        self.last_error_z = 0.0 # Novo
-        
         self.last_pid_time = self.get_clock().now()
         
         self.offboard_stream_counter = 0
@@ -174,9 +156,6 @@ class SetpointCamera(Node):
         # para True quando estiver pronta (no final do estado STARTING).
         self.is_valid = False
         self.success_counter = 0
-        
-        ### MUDANÇA: Sub-estado para controle sequencial ###
-        self.control_phase = 'XY' # Pode ser 'XY' ou 'Z'
 
     # --- CALLBACKS ---
     def visual_info_callback(self, msg):
@@ -466,18 +445,14 @@ class SetpointCamera(Node):
                 )
 
     def run_state_moving(self):
-        """
-        Executa controle PID sequencial:
-        1. Fase 'XY': Move em X e Y até atingir o threshold.
-        2. Fase 'Z': Move em Z até atingir o threshold.
-        """
+        """Executa controle PID (Eixos X e Y)."""
         if not self.is_position_fresh():
             self.get_logger().error("Posição antiga! Revertendo para IDLE.")
             self.state = State.IDLE
             self.publish_velocity_setpoint(np.array([0.0, 0.0, 0.0]))
             
+            # Se a posição falhar, reseta a contagem consecutiva
             self.success_counter = 0
-            self.control_phase = 'XY' # Reseta a fase
             self.get_logger().warn("Contagem de sucessos resetada devido à posição antiga.")
             return
 
@@ -490,129 +465,99 @@ class SetpointCamera(Node):
         if dt < (self.timer_period * 0.1):
             return
 
-        # --- Calcula todos os erros ---
-        error_x = (self.setpoint_ned[0] - self.current_pos_ned[0])
-        error_y = (self.setpoint_ned[1] - self.current_pos_ned[1])
-        error_z = (self.setpoint_ned[2] - self.current_pos_ned[2])
+        # --- Controlador PID 2D (X e Y) ---
         
+        # 1. Erro (X e Y)
+        error_x = (self.setpoint_ned[0] - self.current_pos_ned[0])
+        error_y = (self.setpoint_ned[1] - self.current_pos_ned[1]) # Novo
+        
+        # 2. Integral (X e Y)
+        self.integral_error_x += error_x * dt
+        self.integral_error_x = np.clip(
+            self.integral_error_x, -self.integral_limit, self.integral_limit
+        )
+        
+        self.integral_error_y += error_y * dt # Novo
+        self.integral_error_y = np.clip(
+            self.integral_error_y, -self.integral_limit, self.integral_limit
+        )
+        
+        # 3. Derivativo (X e Y)
+        derivative_error_x = (error_x - self.last_error_x) / dt
+        self.last_error_x = error_x
+        
+        derivative_error_y = (error_y - self.last_error_y) / dt # Novo
+        self.last_error_y = error_y
+        
+        # Saída do PID (X e Y)
+        output_vel_x = (
+            self.kp * error_x +
+            self.ki * self.integral_error_x +
+            self.kd * derivative_error_x
+        )
+        
+        output_vel_y = ( # Novo
+            self.kp * error_y +
+            self.ki * self.integral_error_y +
+            self.kd * derivative_error_y
+        )
+        
+        # --- Construção do Vetor de Saída ---
+        
+        ### MUDANÇA: Vetor de velocidade agora é 2D ###
+        output_vel = np.array([
+                    output_vel_x, # Velocidade controlada pelo PID em X
+                    output_vel_y, # Velocidade controlada pelo PID em Y
+                    0.0           # Velocidade Z fixada em zero
+                ])
+        
+        # Saturação do vetor de velocidade 3D (lógica 2D/3D idêntica)
+        output_norm = np.linalg.norm(output_vel)
+        if output_norm > self.max_vel:
+            if output_norm > 1e-6:
+                output_vel = output_vel * (self.max_vel / output_norm)
+            else:
+                output_vel = np.array([0.0, 0.0, 0.0])
+            
+        # --- Verificação de Sucesso ---
+        
+        ### MUDANÇA: Condição de sucesso agora é Distância Euclidiana 2D ###
         error_vec_xy = np.array([error_x, error_y])
-        current_error_distance_xy = np.linalg.norm(error_vec_xy)
-        current_error_distance_z = abs(error_z)
+        current_error_distance = np.linalg.norm(error_vec_xy)
 
-        # ==========================================================
-        # FASE 1: Controle X/Y
-        # ==========================================================
-        if self.control_phase == 'XY':
+        if current_error_distance < self.threshold_distance:
+            # ALVO ALCANÇADO
+            self.success_counter += 1
+            self.get_logger().info(f"Alvo alcançado! Erro 2D: {current_error_distance:.3f}m. (Ciclo de sucesso: {self.success_counter}/10)")
             
-            if current_error_distance_xy < self.threshold_distance:
-                # --- SUCESSO EM XY ---
-                self.get_logger().info(f"FASE 1 (XY) CONCLUÍDA. Erro 2D: {current_error_distance_xy:.3f}m")
-                
-                ### MUDANÇA (Conforme solicitado): Log e transição de fase ###
-                self.get_logger().info("!!! Zerando velocidades X/Y. Iniciando controle de altitude (Z).")
-                
-                self.publish_velocity_setpoint(np.array([0.0, 0.0, 0.0]))
-                
-                # Reseta o PID de Z para uma partida limpa
-                self.integral_error_z = 0.0
-                self.last_error_z = 0.0
-                self.success_counter += 1
-                
-                if self.success_counter >= 10:
-                    # CONDIÇÃO DE SUCESSO FINAL ATINGIDA
-                    self.get_logger().info("10 sucessos consecutivos alcançados. Transição para Z.")
-                    # Muda a fase
-                    self.control_phase = 'Z' 
-                    self.success_counter = 0 # Reseta contador para fase Z
-                else:   
-                    # SUCESSO, MAS AINDA NÃO TERMINOU
-                    self.state = State.IDLE
-                    self.is_valid = True
-                    self.get_logger().info(f"Transição: MOVING -> {self.state.name}")
-                    self.get_logger().info("Movimento concluído. 'Destravando' para receber próximo setpoint.")
-                         
-                return # Espera o próximo ciclo para iniciar o controle de Z
+            # Para o drone
+            self.publish_velocity_setpoint(np.array([0.0, 0.0, 0.0]))
 
-            else:
-                # --- AINDA SE MOVENDO EM XY ---
-                if self.success_counter > 0: # Perdeu o alvo
-                    self.get_logger().warn(f"Alvo XY perdido (Erro 2D: {current_error_distance_xy:.3f}m). Resetando contador.")
-                    self.success_counter = 0
+            if self.success_counter >= 10:
+                # CONDIÇÃO DE SUCESSO FINAL ATINGIDA
+                self.get_logger().info("10 sucessos consecutivos alcançados. Transição para SUCCESS.")
+                self.state = State.SUCCESS
+            else:   
+                # SUCESSO, MAS AINDA NÃO TERMINOU
+                self.state = State.IDLE
+                self.is_valid = True
+                self.get_logger().info(f"Transição: MOVING -> {self.state.name}")
+                self.get_logger().info("Movimento concluído. 'Destravando' para receber próximo setpoint.")
 
-                # --- Controlador PID (X e Y) ---
-                # (Correção: Usando ganhos por eixo _x e _y que corrigi anteriormente)
-                self.integral_error_x = np.clip(self.integral_error_x + error_x * dt, -self.integral_limit, self.integral_limit)
-                derivative_error_x = (error_x - self.last_error_x) / dt
-                self.last_error_x = error_x
-                output_vel_x = (self.kp * error_x + self.ki * self.integral_error_x + self.kd * derivative_error_x)
-
-                self.integral_error_y = np.clip(self.integral_error_y + error_y * dt, -self.integral_limit, self.integral_limit)
-                derivative_error_y = (error_y - self.last_error_y) / dt
-                self.last_error_y = error_y
-                output_vel_y = (self.kp * error_y + self.ki * self.integral_error_y + self.kd * derivative_error_y)
-                
-                # --- Saída de Velocidade (XY) ---
-                output_vel = np.array([output_vel_x, output_vel_y, 0.0]) # Z é zero
-                
-                output_norm = np.linalg.norm(output_vel)
-                if output_norm > self.max_vel: # Saturação XY
-                    output_vel = output_vel * (self.max_vel / output_norm)
-
-                self.publish_velocity_setpoint(output_vel)
-                self.get_logger().info(
-                    f"Fase XY - Erro 2D: {current_error_distance_xy:.2f}m | Vel: [{output_vel[0]:.2f}, {output_vel[1]:.2f}, 0.00]",
-                    throttle_duration_sec=0.5
-                )
-
-        # ==========================================================
-        # FASE 2: Controle Z
-        # ==========================================================
-        elif self.control_phase == 'Z':
+        else:
+            # AINDA SE MOVENDO (OU PERDEU O ALVO)
             
-            if current_error_distance_z < self.threshold_distance_z:
-                # --- SUCESSO FINAL (3D) ---
-                self.success_counter += 1
-                self.get_logger().info(f"FASE 2 (Z) CONCLUÍDA. Erro Z: {current_error_distance_z:.3f}m. (Ciclo de sucesso: {self.success_counter}/10)")
-                self.publish_velocity_setpoint(np.array([0.0, 0.0, 0.0])) # Para
-
-                if self.success_counter >= 10:
-                    self.get_logger().info("10 sucessos 3D consecutivos alcançados. Transição para SUCCESS.")
-                    self.state = State.SUCCESS
-                else:   
-                    self.state = State.IDLE
-                    self.is_valid = True
-                    self.get_logger().info(f"Transição: MOVING -> {self.state.name}. 'Destravando' para próximo setpoint.")
-                
-                # Reseta a fase para o próximo ciclo completo
-                self.control_phase = 'XY' 
-
-            else:
-                # --- AINDA SE MOVENDO EM Z ---
-                if self.success_counter > 0: # Perdeu o alvo Z
-                    self.get_logger().warn(f"Alvo Z perdido (Erro: {current_error_distance_z:.3f}m). Resetando contador.")
-                    self.success_counter = 0
-                
-                # --- Controlador PID (Z) ---
-                self.integral_error_z = np.clip(self.integral_error_z + error_z * dt, -self.integral_limit_z, self.integral_limit_z)
-                derivative_error_z = (error_z - self.last_error_z) / dt
-                self.last_error_z = error_z
-                output_vel_z = (self.kp_z * error_z + self.ki_z * self.integral_error_z + self.kd_z * derivative_error_z)
-
-                # --- Saída de Velocidade (Z) ---
-                output_vel = np.array([0.0, 0.0, output_vel_z]) # X e Y são zero
-                # Inverte o sinal para NED
-                output_vel[2] = -output_vel[2]
-                
-                # Saturação Z
-                if abs(output_vel[2]) > self.max_vel_z:
-                    output_vel[2] = np.sign(output_vel[2]) * self.max_vel_z
-                
-                self.publish_velocity_setpoint(output_vel)
-                self.get_logger().info(
-                    f"Fase Z - Erro Z: {current_error_distance_z:.2f}m | Vel: [0.00, 0.00, {output_vel[2]:.2f}]",
-                    throttle_duration_sec=0.5
-                )
-                
+            if self.success_counter > 0:
+                self.get_logger().warn(f"Alvo perdido (Erro 2D: {current_error_distance:.3f}m). Resetando contador de sucesso.")
+                self.success_counter = 0
+            
+            # Continua se movendo
+            self.publish_velocity_setpoint(output_vel)
+            
+            self.get_logger().info(
+                f"Erro 2D: {current_error_distance:.2f}m | Vel: [{output_vel[0]:.2f}, {output_vel[1]:.2f}, {output_vel[2]:.2f}]",
+                throttle_duration_sec=0.5
+            )
     def run_state_success(self):
         """
         Estado final. O drone alcançou o alvo 10 vezes.
@@ -631,13 +576,8 @@ class SetpointCamera(Node):
         self.last_error_x = 0.0
         self.integral_error_y = 0.0 # Novo
         self.last_error_y = 0.0 # Novo
-        self.integral_error_z = 0.0 # Novo
-        self.last_error_z = 0.0 # Novo
         
         self.last_pid_time = self.get_clock().now()
-        
-        ### MUDANÇA: Reseta a fase de controle ###
-        self.control_phase = 'XY'
 
     def is_position_fresh(self):
         if not self.current_pos_received or self.last_pos_timestamp is None:
