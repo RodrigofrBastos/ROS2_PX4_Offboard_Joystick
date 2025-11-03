@@ -48,9 +48,9 @@ class SetpointCamera(Node):
     def init_parameters(self):
         self.declare_parameter('timer_period', 0.05)
         self.declare_parameter('feature_topic', '/pose_feature')
-        self.declare_parameter('offset_z_distance', 0.5)
+        self.declare_parameter('pos_ned_offset', -1.0)  # Offset em Z para posição NED
         self.declare_parameter('threshold_distance', 0.1)
-        self.declare_parameter('threshold_distance_z', 0.5)
+        self.declare_parameter('threshold_distance_z', 0.5) 
 
         self.declare_parameter('px4_cmd_topic', '/fmu/in/vehicle_command')
         self.declare_parameter('px4_pos_topic', '/fmu/out/vehicle_local_position_v1')
@@ -75,11 +75,11 @@ class SetpointCamera(Node):
         
         default_tf_matrix = [0., 1., 0., 0., 0., 1., 1., 0., 0.]
         self.declare_parameter('target_to_enu_tf', default_tf_matrix)
+        
 
     def get_parameters(self):
         self.timer_period = self.get_parameter('timer_period').get_parameter_value().double_value
         self.feature_topic = self.get_parameter('feature_topic').get_parameter_value().string_value
-        self.offset_z_distance = self.get_parameter('offset_z_distance').get_parameter_value().double_value
         self.threshold_distance = self.get_parameter('threshold_distance').get_parameter_value().double_value
         self.threshold_distance_z = self.get_parameter('threshold_distance_z').get_parameter_value().double_value
         
@@ -107,6 +107,8 @@ class SetpointCamera(Node):
         tf_list = self.get_parameter('target_to_enu_tf').get_parameter_value().double_array_value
         self.T_target_to_enu = np.array(tf_list).reshape(3, 3)
         self.get_logger().info(f"Matriz de Transformação (Target -> ENU):\n{self.T_target_to_enu}")
+
+        self.pos_ned_offset = self.get_parameter('pos_ned_offset').get_parameter_value().double_value
 
     def init_ros_interfaces(self):
         qos_px4 = QoSProfile(
@@ -143,7 +145,7 @@ class SetpointCamera(Node):
             self.attitude_callback,
             qos_px4)
         self.error_top = self.create_publisher(Float64, "/pid_error", 10)
-        self.linearity = self.create_publisher(Float64, "/linearity", 10)
+        self.setpoint_z_ned_pub = self.create_publisher(Float64, "/setpoint_Z_NED", 10)
 
         self.timer = self.create_timer(self.timer_period, self.timer_callback)
 
@@ -207,6 +209,7 @@ class SetpointCamera(Node):
             # Empilha as coordenadas (agora funciona para 1 ou N pontos)
             target_coords_raw = np.column_stack((x_val, y_val, z_val))
 
+            self.target_coor_z = target_coords_raw[0][2]
             ### MUDANÇA (A CORREÇÃO) ###
             # Validação de Sanidade: Checa se todos os valores recebidos são finitos
             # (ou seja, não são 'inf', '-inf' ou 'nan')
@@ -225,7 +228,7 @@ class SetpointCamera(Node):
                 
                 # Chama a função de transformação
                 self.setpoint_ned = self.transform_target_to_ned_setpoint(self.target_coords)
-                
+
                 # 1. Sinaliza para a FSM que há um novo setpoint
                 self.new_setpoint_received = True
                 
@@ -345,7 +348,7 @@ class SetpointCamera(Node):
 
     def transform_target_to_ned_setpoint(self,
                                         target_vec,
-                                        apply_offset=False):
+                                        apply_offset=True):
         
         # Pega o primeiro alvo da lista
         primeiro_alvo = target_vec[0]
@@ -358,7 +361,7 @@ class SetpointCamera(Node):
         displacement_enu = np.zeros(3, dtype=np.float64)
         displacement_enu[0] = displacement_enu_old[1]
         displacement_enu[1] = -1.0 * displacement_enu_old[0]
-        displacement_enu[2] = displacement_enu[2] - 1.0
+        displacement_enu[2] = displacement_enu[2]
         # self.get_logger().info(f"1) Deslocamento em ENU mundo: {displacement_enu}")
 
         # 2) Posição atual do robô em NED
@@ -380,6 +383,7 @@ class SetpointCamera(Node):
 
 
         # Soma a posição do robô
+        displacement_world_ned[2] = -displacement_world_ned[2]  # Z já está em NED
         target_position_ned = displacement_world_ned + robot_pos_ned
         
         # 4) Calcular posição do objeto (setpoint final)
@@ -388,12 +392,11 @@ class SetpointCamera(Node):
 
         # 5) Aplicar offset se necessário
         if apply_offset:
-            # NOTA: self.offset_x, y, z não estão definidos no seu código. 
             # Esta parte pode falhar se apply_offset=True
             offset_ned = np.array([
-                float(self.offset_x),
-                float(self.offset_y),
-                float(self.offset_z)
+                0.0,
+                0.0,
+                0.0
             ], dtype=np.float64)
             target_position_ned = target_position_ned + offset_ned
             # self.get_logger().info(f"5) Com offset: {target_position_ned}")
@@ -404,7 +407,10 @@ class SetpointCamera(Node):
     # --- MÁQUINA DE ESTADOS ---
     def timer_callback(self):
         self.publish_offboard_mode()
-
+        published_stp = Float64()
+        published_stp.data = self.setpoint_ned[2] 
+        self.setpoint_z_ned_pub.publish(published_stp)
+        # self.get_logger().info(f"Estado atual: {self.state.name}")
         if self.state == State.STARTING:
             self.run_state_starting()
         elif self.state == State.IDLE:
@@ -493,11 +499,12 @@ class SetpointCamera(Node):
         # --- Calcula todos os erros ---
         error_x = (self.setpoint_ned[0] - self.current_pos_ned[0])
         error_y = (self.setpoint_ned[1] - self.current_pos_ned[1])
-        error_z = (self.setpoint_ned[2] - self.current_pos_ned[2])
+        # error_z = (self.setpoint_ned[2] - self.current_pos_ned[2])
         
         error_vec_xy = np.array([error_x, error_y])
         current_error_distance_xy = np.linalg.norm(error_vec_xy)
-        current_error_distance_z = abs(error_z)
+        current_error_distance_z = self.target_coor_z
+
 
         # ==========================================================
         # FASE 1: Controle X/Y
@@ -517,7 +524,7 @@ class SetpointCamera(Node):
                 self.integral_error_z = 0.0
                 self.last_error_z = 0.0
                 self.success_counter += 1
-                
+                self.get_logger().info(f"Ciclo de sucesso em XY: {self.success_counter}/10")
                 if self.success_counter >= 10:
                     # CONDIÇÃO DE SUCESSO FINAL ATINGIDA
                     self.get_logger().info("10 sucessos consecutivos alcançados. Transição para Z.")
@@ -568,23 +575,17 @@ class SetpointCamera(Node):
         # FASE 2: Controle Z
         # ==========================================================
         elif self.control_phase == 'Z':
-            
-            if current_error_distance_z < self.threshold_distance_z:
+            self.get_logger().info(f"Erro Atual Z: {current_error_distance_z:.3f}m")
+            self.get_logger().info(f" setpoint Z em NED: {self.setpoint_ned[2]:.2f}, pos Z em NED: {self.current_pos_ned[2]:.2f}, offset: {self.pos_ned_offset:.2f}")
+
+            if abs(current_error_distance_z) < abs(self.threshold_distance_z):
                 # --- SUCESSO FINAL (3D) ---
                 self.success_counter += 1
                 self.get_logger().info(f"FASE 2 (Z) CONCLUÍDA. Erro Z: {current_error_distance_z:.3f}m. (Ciclo de sucesso: {self.success_counter}/10)")
                 self.publish_velocity_setpoint(np.array([0.0, 0.0, 0.0])) # Para
-
-                if self.success_counter >= 10:
-                    self.get_logger().info("10 sucessos 3D consecutivos alcançados. Transição para SUCCESS.")
-                    self.state = State.SUCCESS
-                else:   
-                    self.state = State.IDLE
-                    self.is_valid = True
-                    self.get_logger().info(f"Transição: MOVING -> {self.state.name}. 'Destravando' para próximo setpoint.")
-                
-                # Reseta a fase para o próximo ciclo completo
-                self.control_phase = 'XY' 
+                self.state = State.SUCCESS
+                self.get_logger().info(f"Transição: MOVING -> {self.state.name}")
+                return
 
             else:
                 # --- AINDA SE MOVENDO EM Z ---
@@ -593,15 +594,14 @@ class SetpointCamera(Node):
                     self.success_counter = 0
                 
                 # --- Controlador PID (Z) ---
-                self.integral_error_z = np.clip(self.integral_error_z + error_z * dt, -self.integral_limit_z, self.integral_limit_z)
-                derivative_error_z = (error_z - self.last_error_z) / dt
-                self.last_error_z = error_z
-                output_vel_z = (self.kp_z * error_z + self.ki_z * self.integral_error_z + self.kd_z * derivative_error_z)
+                self.integral_error_z = np.clip(self.integral_error_z + current_error_distance_z * dt, -self.integral_limit_z, self.integral_limit_z)
+                derivative_error_z = (current_error_distance_z - self.last_error_z) / dt
+                self.last_error_z = current_error_distance_z
+                output_vel_z = (self.kp_z * current_error_distance_z + self.ki_z * self.integral_error_z + self.kd_z * derivative_error_z)
 
                 # --- Saída de Velocidade (Z) ---
                 output_vel = np.array([0.0, 0.0, output_vel_z]) # X e Y são zero
                 # Inverte o sinal para NED
-                output_vel[2] = -output_vel[2]
                 
                 # Saturação Z
                 if abs(output_vel[2]) > self.max_vel_z:
