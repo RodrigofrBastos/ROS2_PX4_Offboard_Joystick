@@ -19,6 +19,7 @@ from px4_msgs.msg import VehicleLocalPosition
 from px4_msgs.msg import VehicleAttitude
 
 from std_msgs.msg import Float64
+from std_msgs.msg import Bool
 
 def get_message_name_version(msg_class):
     if msg_class.MESSAGE_VERSION == 0:
@@ -50,7 +51,7 @@ class SetpointCamera(Node):
         self.declare_parameter('feature_topic', '/pose_feature')
         self.declare_parameter('pos_ned_offset', -1.0)  # Offset em Z para posição NED
         self.declare_parameter('threshold_distance', 0.1)
-        self.declare_parameter('threshold_distance_z', 0.5) 
+        self.declare_parameter('threshold_distance_z', 0.4) 
 
         self.declare_parameter('px4_cmd_topic', '/fmu/in/vehicle_command')
         self.declare_parameter('px4_pos_topic', '/fmu/out/vehicle_local_position_v1')
@@ -72,6 +73,8 @@ class SetpointCamera(Node):
         
         self.declare_parameter('offboard_stream_delay_s', 2.0)
         self.declare_parameter('pos_staleness_threshold_s', 0.5)
+        
+        self.declare_parameter('success_z_vel', -0.3) # Vel Z (NED) após 10s em SUCCESS
         
         default_tf_matrix = [0., 1., 0., 0., 0., 1., 1., 0., 0.]
         self.declare_parameter('target_to_enu_tf', default_tf_matrix)
@@ -103,6 +106,8 @@ class SetpointCamera(Node):
         self.offboard_stream_delay_s = self.get_parameter('offboard_stream_delay_s').get_parameter_value().double_value
         self.pos_staleness_threshold_s = self.get_parameter('pos_staleness_threshold_s').get_parameter_value().double_value
         self.offboard_cycles_needed = int(self.offboard_stream_delay_s / self.timer_period)
+        
+        self.success_z_vel = self.get_parameter('success_z_vel').get_parameter_value().double_value
         
         tf_list = self.get_parameter('target_to_enu_tf').get_parameter_value().double_array_value
         self.T_target_to_enu = np.array(tf_list).reshape(3, 3)
@@ -146,6 +151,7 @@ class SetpointCamera(Node):
             qos_px4)
         self.error_top = self.create_publisher(Float64, "/pid_error", 10)
         self.setpoint_z_ned_pub = self.create_publisher(Float64, "/setpoint_Z_NED", 10)
+        self.is_stable = self.create_publisher(Bool, "/is_stable", 10)
 
         self.timer = self.create_timer(self.timer_period, self.timer_callback)
 
@@ -179,6 +185,10 @@ class SetpointCamera(Node):
         
         ### MUDANÇA: Sub-estado para controle sequencial ###
         self.control_phase = 'XY' # Pode ser 'XY' ou 'Z'
+        
+        self.success_entry_time = None  # Armazena quando entramos em SUCCESS
+        
+        self.is_stable_ = False  # Inicia quando entramos em SUCCESS, valida a estabilidade do drone
 
     # --- CALLBACKS ---
     def visual_info_callback(self, msg):
@@ -580,9 +590,9 @@ class SetpointCamera(Node):
 
             if abs(current_error_distance_z) < abs(self.threshold_distance_z):
                 # --- SUCESSO FINAL (3D) ---
-                self.success_counter += 1
-                self.get_logger().info(f"FASE 2 (Z) CONCLUÍDA. Erro Z: {current_error_distance_z:.3f}m. (Ciclo de sucesso: {self.success_counter}/10)")
+                self.get_logger().info(f"FASE 2 (Z) CONCLUÍDA. Erro Z: {current_error_distance_z:.3f}m.")
                 self.publish_velocity_setpoint(np.array([0.0, 0.0, 0.0])) # Para
+                self.success_counter += 1
                 self.state = State.SUCCESS
                 self.get_logger().info(f"Transição: MOVING -> {self.state.name}")
                 return
@@ -615,15 +625,73 @@ class SetpointCamera(Node):
                 
     def run_state_success(self):
         """
-        Estado final. O drone alcançou o alvo 10 vezes.
-        Apenas mantém o drone parado e não aceita mais setpoints.
+        Estado final. Aguarda 10s, depois aplica velocidade Z constante.
+        Não aceita mais setpoints.
         """
-        self.is_valid = False
-        self.publish_velocity_setpoint(np.array([0.0, 0.0, 0.0]))
-        self.get_logger().info(
-            "Estado final: SUCCESS. O drone está parado. A missão foi concluída.",
-            throttle_duration_sec=10.0
-        )
+        self.is_valid = False # Impede novos setpoints
+
+        # 1. Armazena o tempo de entrada na primeira vez que esta função é chamada
+        if self.success_entry_time is None:
+            self.success_entry_time = self.get_clock().now()
+            self.get_logger().info(
+                "Estado SUCCESS: Alvo final alcançado. Iniciando contagem de 10 segundos..."
+            )
+            
+        # 2. Calcula o tempo decorrido
+        elapsed_time = self.get_clock().now() - self.success_entry_time
+        elapsed_seconds = elapsed_time.nanoseconds / 1e9
+
+        # 3. Lógica
+        if elapsed_seconds < 10.0:
+            # AINDA AGUARDANDO: Mantém o drone parado
+            self.publish_velocity_setpoint(np.array([0.0, 0.0, 0.0]))
+            self.get_logger().info(
+                f"Estado SUCCESS: Aguardando... {elapsed_seconds:.1f}/10.0s",
+                throttle_duration_sec=1.0 # Loga apenas a cada 1s para não poluir
+            )
+        elif elapsed_seconds > 10 and elapsed_seconds < 15:
+            # 10 SEGUNDOS PASSARAM: Aplica velocidade Z
+            self.get_logger().info(
+                f"Estado SUCCESS: 10 segundos concluídos. Aplicando velocidade Z: {self.success_z_vel} m/s",
+                throttle_duration_sec=5.0 # Loga a cada 5s
+            )
+            
+            # (Lembre-se: em NED, velocidade Z positiva é PARA BAIXO)
+            self.publish_velocity_setpoint(np.array([0.0, 0.0, self.success_z_vel]))
+        else:
+            # Garante que o drone recebeu o comando de parar
+            self.publish_velocity_setpoint(np.array([0.0, 0.0, 0.0]))
+
+            # Defina seu limiar de instabilidade em GRAUS
+            stability_threshold_degrees = 7.0 
+            stability_threshold_radians = np.deg2rad(stability_threshold_degrees)
+
+            verify_stability = Bool()
+
+            # Pega o valor absoluto (módulo) do pitch e roll atuais
+            current_pitch_rad = abs(self.truePitch)
+            current_roll_rad = abs(self.trueRoll)
+
+            # Verifica se QUALQUER um deles ultrapassou o limiar
+            if (current_pitch_rad > stability_threshold_radians) or (current_roll_rad > stability_threshold_radians):
+                # Drone está INSTÁVEL
+                self.get_logger().warn(
+                    f"INSTÁVEL! Pitch: {np.rad2deg(current_pitch_rad):.2f}°, Roll: {np.rad2deg(current_roll_rad):.2f}°",
+                    throttle_duration_sec=1.0 
+                )
+                self.is_stable_ = False
+                verify_stability.data = self.is_stable_
+                self.is_stable.publish(verify_stability)
+            else:
+                # Drone está ESTÁVEL
+                self.get_logger().info(
+                    f"Estável. Pitch: {np.rad2deg(current_pitch_rad):.2f}°, Roll: {np.rad2deg(current_roll_rad):.2f}°",
+                    throttle_duration_sec=1.0 
+                )
+                self.is_stable_ = True
+                verify_stability.data = self.is_stable_
+                self.is_stable.publish(verify_stability)
+            
         
     def reset_pid_controller(self):
         """Reseta estado do PID."""
