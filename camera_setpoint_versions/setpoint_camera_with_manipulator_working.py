@@ -53,8 +53,8 @@ class SetpointCamera(Node):
         self.declare_parameter('pos_ned_offset', -1.0)  # Offset em Z para posição NED
         self.declare_parameter('threshold_distance', 0.1)
         self.declare_parameter('threshold_distance_z', 0.4)  # Quando o grasping for de agarrar por baixo
-        # self.declare_parameter('threshold_distance_z', 0.85)  # Quando o grasping for pegar por alça
-        # self.declare_parameter('threshold_distance_z', 1.4)  # Quando o grasping for pegar o balde
+        # self.declare_parameter('threshold_distance_z', 1.2)  # Quando o grasping for pegar por alça
+        # self.declare_parameter('threshold_distance_z', 1.0)  # Quando o grasping for pegar o balde
 
         self.declare_parameter('px4_cmd_topic', '/fmu/in/vehicle_command')
         self.declare_parameter('px4_pos_topic', '/fmu/out/vehicle_local_position_v1')
@@ -209,17 +209,9 @@ class SetpointCamera(Node):
 
         self.lyap_state_pub = self.create_publisher(String, "/lyapunov/state", 10)
         self.lyap_control_phase_pub = self.create_publisher(String, "/lyapunov/control_phase", 10)
-
-        # ========== PUBLISHERS ADICIONAIS PARA ANÁLISE DE ESTABILIDADE EM HOVER ==========
-        # Ângulos de atitude em radianos (críticos para análise de Lyapunov)
-        self.lyap_roll_pub = self.create_publisher(Float64, "/lyapunov/roll_rad", 10)
-        self.lyap_pitch_pub = self.create_publisher(Float64, "/lyapunov/pitch_rad", 10)
-        self.lyap_yaw_pub = self.create_publisher(Float64, "/lyapunov/yaw_rad", 10)
-
-        # Tempo decorrido no estado SUCCESS
-        self.lyap_success_elapsed_pub = self.create_publisher(Float64, "/lyapunov/success_elapsed_time", 10)
-
-        # ========== FIM PUBLISHERS ADICIONAIS ==========
+        
+        # ========== FIM DOS PUBLISHERS DE LYAPUNOV ==========''
+    
 
     def init_variables(self):
         self.setpoint_ned = np.array([0.0, 0.0, 0.0])
@@ -520,6 +512,7 @@ class SetpointCamera(Node):
             self.get_logger().info(f"Transição: STARTING -> {self.state.name}")
             self.get_logger().info("Pronto para receber o primeiro setpoint. 'Destravando' dados visuais.")
 
+
     def run_state_idle(self):
         """Aguarda novo setpoint com posição válida."""
         # Mantém o drone parado enquanto espera
@@ -725,7 +718,6 @@ class SetpointCamera(Node):
         """
         Estado final. Aguarda 10s, depois aplica velocidade Z constante.
         Não aceita mais setpoints.
-        Análise de estabilidade de Lyapunov é realizada neste estado.
         """
         self.is_valid = False # Impede novos setpoints
         self.target_coor_z
@@ -743,170 +735,6 @@ class SetpointCamera(Node):
         # 2. Calcula o tempo decorrido
         elapsed_time = self.get_clock().now() - self.success_entry_time
         elapsed_seconds = elapsed_time.nanoseconds / 1e9
-
-        # ========== PUBLICAÇÃO DE DADOS PARA LYAPUNOV (ESTADO SUCCESS) ==========
-        
-        # Calcula erros de posição (devem ser próximos de zero em hover)
-        error_x = self.setpoint_ned[0] - self.current_pos_ned[0]
-        error_y = self.setpoint_ned[1] - self.current_pos_ned[1]
-        error_z = self.setpoint_ned[2] - self.current_pos_ned[2]
-        
-        # Publica erros individuais
-        msg_error_x = Float64()
-        msg_error_x.data = error_x
-        self.lyap_error_x_pub.publish(msg_error_x)
-        
-        msg_error_y = Float64()
-        msg_error_y.data = error_y
-        self.lyap_error_y_pub.publish(msg_error_y)
-        
-        msg_error_z = Float64()
-        msg_error_z.data = error_z
-        self.lyap_error_z_pub.publish(msg_error_z)
-        
-        # Calcula e publica normas dos erros
-        error_xy_norm = np.sqrt(error_x**2 + error_y**2)
-        error_total_norm = np.sqrt(error_x**2 + error_y**2 + error_z**2)
-        
-        msg_error_xy_norm = Float64()
-        msg_error_xy_norm.data = error_xy_norm
-        self.lyap_error_xy_norm_pub.publish(msg_error_xy_norm)
-        
-        msg_error_total_norm = Float64()
-        msg_error_total_norm.data = error_total_norm
-        self.lyap_error_total_norm_pub.publish(msg_error_total_norm)
-        
-        # Publica derivadas dos erros (aproximadas como zero ou calculadas se necessário)
-        # Em hover estável, as derivadas devem ser próximas de zero
-        msg_deriv_x = Float64()
-        msg_deriv_x.data = 0.0  # Em hover, derivada é aproximadamente zero
-        self.lyap_derivative_error_x_pub.publish(msg_deriv_x)
-        
-        msg_deriv_y = Float64()
-        msg_deriv_y.data = 0.0
-        self.lyap_derivative_error_y_pub.publish(msg_deriv_y)
-        
-        msg_deriv_z = Float64()
-        msg_deriv_z.data = 0.0
-        self.lyap_derivative_error_z_pub.publish(msg_deriv_z)
-        
-        # Publica erros integrativos
-        msg_integral_x = Float64()
-        msg_integral_x.data = self.integral_error_x
-        self.lyap_integral_error_x_pub.publish(msg_integral_x)
-        
-        msg_integral_y = Float64()
-        msg_integral_y.data = self.integral_error_y
-        self.lyap_integral_error_y_pub.publish(msg_integral_y)
-        
-        msg_integral_z = Float64()
-        msg_integral_z.data = self.integral_error_z
-        self.lyap_integral_error_z_pub.publish(msg_integral_z)
-        
-        # Publica posições atuais
-        msg_pos_x = Float64()
-        msg_pos_x.data = self.current_pos_ned[0]
-        self.lyap_current_pos_x_pub.publish(msg_pos_x)
-        
-        msg_pos_y = Float64()
-        msg_pos_y.data = self.current_pos_ned[1]
-        self.lyap_current_pos_y_pub.publish(msg_pos_y)
-        
-        msg_pos_z = Float64()
-        msg_pos_z.data = self.current_pos_ned[2]
-        self.lyap_current_pos_z_pub.publish(msg_pos_z)
-        
-        # Publica setpoints
-        msg_setpoint_x = Float64()
-        msg_setpoint_x.data = self.setpoint_ned[0]
-        self.lyap_setpoint_x_pub.publish(msg_setpoint_x)
-        
-        msg_setpoint_y = Float64()
-        msg_setpoint_y.data = self.setpoint_ned[1]
-        self.lyap_setpoint_y_pub.publish(msg_setpoint_y)
-        
-        msg_setpoint_z = Float64()
-        msg_setpoint_z.data = self.setpoint_ned[2]
-        self.lyap_setpoint_z_pub.publish(msg_setpoint_z)
-        
-        # Publica velocidades comandadas (dependem da fase)
-        if elapsed_seconds < 10.0:
-            # Fase 1: Drone parado
-            cmd_vel_x = 0.0
-            cmd_vel_y = 0.0
-            cmd_vel_z = 0.0
-        elif elapsed_seconds >= 10.0 and elapsed_seconds < 20.0:
-            # Fase 2: Aplicando velocidade Z
-            cmd_vel_x = 0.0
-            cmd_vel_y = 0.0
-            cmd_vel_z = self.success_z_vel
-        else:
-            # Fase 3: Parado novamente
-            cmd_vel_x = 0.0
-            cmd_vel_y = 0.0
-            cmd_vel_z = 0.0
-        
-        msg_vel_x = Float64()
-        msg_vel_x.data = cmd_vel_x
-        self.lyap_cmd_vel_x_pub.publish(msg_vel_x)
-        
-        msg_vel_y = Float64()
-        msg_vel_y.data = cmd_vel_y
-        self.lyap_cmd_vel_y_pub.publish(msg_vel_y)
-        
-        msg_vel_z = Float64()
-        msg_vel_z.data = cmd_vel_z
-        self.lyap_cmd_vel_z_pub.publish(msg_vel_z)
-        
-        cmd_vel_norm = np.sqrt(cmd_vel_x**2 + cmd_vel_y**2 + cmd_vel_z**2)
-        msg_vel_norm = Float64()
-        msg_vel_norm.data = cmd_vel_norm
-        self.lyap_cmd_vel_norm_pub.publish(msg_vel_norm)
-        
-        # Publica timestamp e dt (usa timer_period como aproximação de dt)
-        msg_timestamp = Float64()
-        msg_timestamp.data = self.get_clock().now().nanoseconds / 1e9
-        self.lyap_timestamp_pub.publish(msg_timestamp)
-        
-        msg_dt = Float64()
-        msg_dt.data = self.timer_period  # dt constante baseado no timer
-        self.lyap_dt_pub.publish(msg_dt)
-        
-        # Publica estado do sistema
-        from std_msgs.msg import String
-        msg_state = String()
-        msg_state.data = self.state.name
-        self.lyap_state_pub.publish(msg_state)
-        
-        msg_phase = String()
-        msg_phase.data = "SUCCESS"  # Fase especial
-        self.lyap_control_phase_pub.publish(msg_phase)
-        
-        # ========== DADOS ADICIONAIS PARA ANÁLISE DE ESTABILIDADE EM HOVER ==========
-        
-        # Publica ângulos de atitude (críticos para análise de Lyapunov em hover)
-        msg_roll = Float64()
-        msg_roll.data = self.trueRoll
-        self.lyap_roll_pub = self.create_publisher(Float64, "/lyapunov/roll_rad", 10)
-        self.lyap_roll_pub.publish(msg_roll)
-        
-        msg_pitch = Float64()
-        msg_pitch.data = self.truePitch
-        self.lyap_pitch_pub = self.create_publisher(Float64, "/lyapunov/pitch_rad", 10)
-        self.lyap_pitch_pub.publish(msg_pitch)
-        
-        msg_yaw = Float64()
-        msg_yaw.data = self.trueYaw
-        self.lyap_yaw_pub = self.create_publisher(Float64, "/lyapunov/yaw_rad", 10)
-        self.lyap_yaw_pub.publish(msg_yaw)
-        
-        # Publica tempo decorrido no estado SUCCESS
-        msg_elapsed = Float64()
-        msg_elapsed.data = elapsed_seconds
-        self.lyap_success_elapsed_pub = self.create_publisher(Float64, "/lyapunov/success_elapsed_time", 10)
-        self.lyap_success_elapsed_pub.publish(msg_elapsed)
-        
-        # ========== FIM PUBLICAÇÃO LYAPUNOV (ESTADO SUCCESS) ==========
 
         # 3. Lógica
         if elapsed_seconds < 10.0:
@@ -971,7 +799,8 @@ class SetpointCamera(Node):
                 self.is_stable_ = True
                 verify_stability.data = self.is_stable_
                 self.is_stable.publish(verify_stability)
-                
+            
+        
     def reset_pid_controller(self):
         """Reseta estado do PID."""
         self.integral_error_x = 0.0
@@ -1003,8 +832,9 @@ class SetpointCamera(Node):
             )
         
         return is_fresh
-    
-    # --- PUBLICAÇÃO DE COMANDOS PX4 ---
+
+    # --- PUBLICAÇÕES ---
+
     def publish_offboard_mode(self):
         """Mantém modo Offboard ativo."""
         msg = OffboardControlMode()
